@@ -1,77 +1,148 @@
 # pip install simpy
 
-import simpy
-import numpy as np
-import random
+from clock import Clock
+from customer import Customer
+import simpy, numpy as np, random, math
 
 class Simulation():
-    def __init__(self):
-        pass
+
+    def __init__(self, canvas, result):
         # Datos de la simulación
-        self.SEMILLA = 42  # Semilla generador
-        self.MAX_CAPACIDAD = 2  # Cantidad de clientes dentro de la galeria
-        self.CANT_PROM_CLIENTES = 2  # Cantidad de clientes x cantidad de tiempo
-        self.TIEMPO_SIMULACION = 100  # Duración de la simulación
-        self.TIEMPO_LLEGADA = 10  # Tiempo en que llegan x cantidad de clientes
-        # Tiempo en que un cliente tarda en recorrer la exposicón de la galeria
-        self.TIEMPO_RECORRIDO = 5
+        self.seed = 40 # Semilla generador
+        self.max_capacity = 5  # Cantidad de clientes dentro de la galeria
+        self.arrival_time = 300 # Tiempo (seg) en que llegan x cantidad de clientes
+        self.customer_quantity = 10 # Cantidad de clientes en x cantidad de tiempo
+        self.observation_time = 30 # Tiempo en que un cliente tarda en observar una pintura
 
-    def recorrido_galeria(self, env, name):
-        # Distribución exponencial
-        tiempo = random.expovariate(1.0 / self.TIEMPO_RECORRIDO)
-        yield env.timeout(tiempo)  # tiempo en que el cliente recorre la galeria
-        print('%05.02f %s: Termina el recorrido, duración %05.02f' %
-            (env.now, name, tiempo))
+        # Otros datos
+        self.canvas = canvas
+        self.result = result
+        self.waiting_queue = []
 
+    def tour_gallery(self, env, custumer):
+        coord_tour = [
+            ('x+:y-', 278, 199),
+            ('y-', 0, 139),
+            ('y-', 0, 79),
+            ('x+', 263, 0),
+            ('y+:x+', 309, 86),
+            ('x+', 369, 0),
+            ('x+', 429, 0),
+            ('x+:y-', 470, 79),
+            ('y+', 0, 139),
+            ('y+', 0, 79),
+            ('y+', 0, 293),
+            ('y+', 0, 353),
+            ('y+', 0, 413),
+            ('y-:x-', 309, 406),
+            ('x-', 369, 0),
+            ('x-', 429, 0),
+            ('x-:y+', 278, 413),
+            ('y-', 0, 353),
+            ('y-', 0, 293)
+        ]
+        
+        start = env.now
 
-    def cliente(self, env, name, capacidad):
-        llego = env.now  # tiempo de llegada del cliente
-        print('%05.02f %s: Llega a la galeria' % (llego, name))
+        for coord in coord_tour:
+            # Ditribución exponencial
+            R = random.random() 
+            t = -self.observation_time * math.log(R)
+            yield env.process(custumer.move_to_picture(env, coord))
+            yield env.timeout(t)
 
-        with capacidad.request() as request:  # Espera su turno
+        self.messsage('\n%05.02f Cliente%s: termina el recorrido, duración %05.02f' % (env.now, custumer.name, env.now - start))
+
+    def custumer(self, env, custumer, capacity):
+        # Tiempo de llegada del cliente
+        arrived = env.now
+
+        with capacity.request() as request:  # Espera su turno
+            yield env.process(custumer.walk_to_the_entrance(env, self.waiting_queue))  
             yield request  # Obtiene turno
-            print('%05.02f %s: Ingresa a la galeria, espero %05.02f' %
-                (env.now, name, env.now - llego))
+
+            self.messsage('\n%05.02f Cliente%s: ingreso a la galeria, espero %05.02f' % (env.now, custumer.name, env.now - arrived))
+           
+            # Remueve al cliente de la cola de espera
+            self.waiting_queue.remove(custumer)
+
             # Invoca al proceso del recorrido
-            yield env.process(self.recorrido_galeria(env, name))
-            print('%05.02f %s: Deja la galeria' % (env.now, name))
+            yield env.process(self.tour_gallery(env, custumer))
 
+            self.messsage('\n%05.02f Cliente%s: sale de la galeria' % (env.now, custumer.name))
+            env.process(custumer.walk_to_the_exit(env))
 
-    def llegada_clientes(self, env, min, max, n, capacidad):
+    def arrival_of_each_customer(self, env, min, max, n, capacity):
         for i in range(min, max):  # Para n clientes
-            tiempo = random.uniform(0, self.TIEMPO_LLEGADA / n)  # Ditribución uniforme
-            yield env.timeout(tiempo)  # Tiempo que tarda en llegar cada cliente
+            # Ditribución exponencial
+            #R = random.random() 
+            #t = (-self.arrival_time / n) * math.log(R)
+
+            custumer = Customer(self.canvas, '%02d'%i)
+
+            # Se añade el cliente a la cola
+            self.waiting_queue.append(custumer)
+
+            self.messsage('\n%05.02f Cliente%s: llegó a la galeria' % (env.now, custumer.name))
+
             # Invoca al proceso del cliente
-            env.process(self.cliente(env, 'Cliente %02d' % i, capacidad))
+            env.process(self.custumer(env, custumer, capacity))
 
+            # Tiempo que tarda en llegar cada cliente
+            yield env.timeout(5)
 
-    def principal(self, env, capacidad):
+    def gallery(self, env, capacity):
         total = 0
 
         while True:
-            if env.now < 70:
-                # Distribución de poisson
-                n = np.random.poisson(self.CANT_PROM_CLIENTES)
-                print('%05.02f Llegará(n) %d cliente(s)' % (env.now, n))
+            # Distribución de poisson
+            n = np.random.poisson(self.customer_quantity)
 
-                if n > 0:
-                    min = total + 1
-                    max = n + min
-                    total += n
-                    # Invoca al proceso de llegada
-                    env.process(self.llegada_clientes(env, min, max, n, capacidad))
+            self.messsage('\n%05.02f Llegará(n) %d cliente(s)' % (env.now, n))
+
+            if n > 0:
+                min = total + 1
+                max = n + min
+                total += n
+
+                # Invoca al proceso de llegada de cada cliente
+                env.process(self.arrival_of_each_customer(env, min, max, n, capacity))
 
             # Tiempo que tarda en llegar más clientes
-            yield env.timeout(self.TIEMPO_LLEGADA)
+            yield env.timeout(self.arrival_time)
 
-            print("------------------- Bienvenido Simulación de una Galeria de Arte ------------------")
+    def clock(self, env):
+        clock = Clock(self.canvas, 2, 2, 100, 20, 'white')
+        clock.draw(0)
+
+        while True:
+            yield env.timeout(1)
+            clock.tick(env.now)
 
     def start(self):
-        random.seed(self.SEMILLA)
-        np.random.seed(self.SEMILLA)  # Cualquier valor
+        self.waiting_queue.clear()
+        self.messsage('Inicia la simulación')
+
+        # se establece la semilla
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+
         # Crea el objeto entorno de simulación
         env = simpy.rt.RealtimeEnvironment(strict=False)
+
         # Crea los recursos (Cantidad de clientes dentro de la galeria)
-        serv = simpy.Resource(env, self.MAX_CAPACIDAD)
-        env.process(self.principal(env, serv))  # Invoca el proceso principal
-        env.run(until=self.TIEMPO_SIMULACION)  # Inicia la simulación
+        res = simpy.Resource(env, self.max_capacity)
+
+        # Invoca el proceso del reloj
+        env.process(self.clock(env))
+
+        # Invoca el proceso de la galeria
+        env.process(self.gallery(env, res)) 
+
+        # Inicia la simulación
+        env.run()
+
+    def messsage(self, text):
+        self.result.configure(state='normal')
+        self.result.insert('end', text)
+        self.result.configure(state='disabled')
